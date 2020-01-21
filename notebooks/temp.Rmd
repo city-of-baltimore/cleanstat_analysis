@@ -1,0 +1,340 @@
+---
+title: "stuff"
+author: "Justin Elszasz"
+email: "justin.elszasz@baltimorecity.gov"
+date: "Tuesday, August 6, 2019"
+output:
+  html_notebook:
+    code_folding: hide
+    fig_height: 5
+    fig_width: 10
+    toc: yes
+    toc_depth: 2
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include = T, echo = T, message = FALSE, cache = TRUE}
+knitr::opts_chunk$set(echo = T, 
+                      warning = F, 
+                      message = F,
+                      include = T,
+                      fig.width = 10,
+                      fig.height = 5)
+```
+
+```{r libraries}
+library(tidyverse)
+library(ggiteam)
+library(lubridate)
+library(readxl)
+library(rgdal)
+library(spdplyr)
+library(leaflet)
+library(RSocrata)
+```
+
+```{r load_data, echo = F}
+# read salesforce service requests
+# sf_sw <- read_excel("../data/raw/salesforce/CleanStat_SW_311_salesforce.xlsx",
+#                  col_types = "text",
+#                  na = c("#ERROR"))
+#   
+# sf_hcd <- read_excel("../data/raw/salesforce/CleanStat_HCD_311_salesforce.xlsx",
+#                      col_types = "text",
+#                      na = c("#ERROR"))
+# 
+# sf_siu <- read_excel("../data/raw/salesforce/SW_SIU_Clean_Up_salesforce.xlsx",
+#                      col_types = "text",
+#                      na = c("#ERROR"))
+# 
+# sf_dirty <- read_excel("../data/raw/salesforce/SW_DirtyAlley_DirtyStreet_311_salesforce.xlsx",
+#                      col_types = "text",
+#                      na = c("#ERROR"))
+
+# real property table for blcok lookup if necessary
+real_prop <- read_csv("../data/raw/Real_Property_Taxes.csv")
+
+# work order data from CHIP table on SQL db
+# wo_sql <- read_excel("../data/raw/chip/CHIP_WO_sql.xlsx",
+#                      col_types = "text",
+#                      na = "N/A") %>%
+#   mutate(`Date Create` = as.Date(as.numeric(`Date Create`), origin = "1899-12-30")) %>%
+#   filter(`Date Create` >= "2018-01-01")
+
+# parcels shapefile from Open Baltimore
+parcels <- readOGR("../data/raw/parcels/parcels.shp", verbose = F)
+
+#street_segments <- readOGR("../data/raw/Buffer_of_Streets_and_311_v3/Buffer_of_Streets_and_311_v3.shp", verbose = F)
+
+quads <- readOGR("../data/raw/DPW Quadrant Shapefile/SW_Quadrants_Polygon_New.shp", verbose = F)
+
+promow <- read_excel("../data/raw/ProMow_MCCPropertyList_20190730.xlsx")
+
+query <- paste0("https://data.baltimorecity.gov/resource/9agw-sxsr.json",
+                "?$where=",
+                "(srtype like 'SW-Boarding' OR ",
+                "srtype like 'SW-Cleaning' OR ",
+                "srtype like 'SW-HGW' OR ",
+                "srtype like 'SW-Dirty Alley' OR ",
+                "srtype like 'SW-Dirty Street' OR ",
+                "srtype like 'HCD-Illegal Dumping' OR ",
+                "srtype like 'HCD-SIU' OR ",
+                "srtype like 'HCD-Sanitation Property')")
+
+sr <- read.socrata(url = query)
+
+sr <- sr %>% mutate(latitude = as.numeric(latitude), longitude = as.numeric(longitude))
+
+wo <- read_csv("../data/raw/chip/2019-08-30_chip_export.csv")
+
+wo <- wo %>% mutate(Latitude = as.numeric(Latitude), Longitude = as.numeric(Longitude))
+```
+
+```{r}
+sr_geo <- SpatialPointsDataFrame(
+  coords = sr %>% select(longitude, latitude) %>% filter(!is.na(latitude)), 
+  data = sr %>% filter(!is.na(latitude)), 
+  proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+)
+
+wo_geo <- SpatialPointsDataFrame(
+  coords = wo %>% select(Longitude, Latitude) %>% filter(!is.na(Latitude)), 
+  data = wo %>% filter(!is.na(Latitude)), 
+  proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+)
+
+quads <- spTransform(
+  quads, 
+  CRS( "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+  )
+```
+
+```{r}
+dpw_facilities <- c("417 E FAYETTE ST",
+                    "3939 REISTERSTOWN RD",
+                    "3411 BANK ST",
+                    "5225 YORK RD")
+```
+
+```{r}
+sr_geo@data <- sr_geo@data %>%
+  bind_cols(over(sr_geo, quads))
+
+wo_geo@data <- wo_geo@data %>%
+  bind_cols(over(wo_geo, quads))
+```
+
+```{r fig.width = 1.6, fig.height = 1.}
+sr_geo@data %>%
+  mutate(year.created = year(createddate),
+         od = ifelse(duedate < "2019-08-30", T, F)) %>%
+  filter(year.created == 2019,
+         !is.na(ID),
+         !grepl("Duplicate", srstatus),
+         !grepl("Transferred", srstatus),
+         !grepl("HCD", srtype),
+         !(srtype %in% c("SW-Dirty Street", "SW-Dirty Alley"))) %>%
+  count(ID, srtype) %>%
+  #group_by(ID) %>%
+  #mutate(quad.total = sum(n)) %>%
+  ggplot(aes(ID, n)) + 
+  coord_flip() +
+  geom_col(aes(fill = srtype), position = position_stack(reverse = T)) +
+  geom_text(aes(x = ID, y = n, 
+                label = ifelse(n > 500, n, ""), 
+                family = "oswald"),
+            position = position_stack(reverse = F,
+                                      vjust = 0.5),
+            size = 2.5) +
+  scale_fill_discrete_iteam() +
+    theme_iteam_google_docs() + 
+  theme(axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        legend.title = element_blank(),
+                panel.grid.minor.x = element_line(size = .3, color = "gray90"),
+        panel.grid.major.x = element_line(size = .3, color = "gray90"),
+        panel.grid.major.y = element_blank(),
+        panel.spacing = unit(1, "lines"),
+        legend.position = "bottom",
+        plot.caption = element_text(face = "plain",
+                                    size = 7)) +
+  labs(title = "Service Requests Created in 2019",
+       caption = paste0("Open Baltimore as of ", today() -1)) 
+```
+
+
+```{r}
+sr_geo@data %>%
+  mutate(year.created = year(createddate),
+         od = ifelse(duedate < "2019-08-30", T, F)) %>%
+  filter(year.created == 2019,
+         !is.na(ID),
+         !grepl("Duplicate", srstatus),
+         !grepl("Transferred", srstatus),
+         !grepl("HCD", srtype),
+         (srtype %in% c("SW-Dirty Street", "SW-Dirty Alley"))) %>%
+  count(ID) %>%
+  mutate(pct = n / sum(n))
+```
+
+
+
+```{r fig.height = 1.2, fig.width = 3.5}
+quad.pct.od <- sr_geo@data %>% 
+  filter(srstatus %in% c("New", "Open", "In Progress", "Pending"),
+         !grepl("HCD", srtype),
+         !is.na(ID)) %>%
+  mutate(od = ifelse(duedate < "2019-09-01", T, F)) %>%
+  count(ID, srtype, od) %>%
+  group_by(ID, srtype) %>%
+  mutate(tot = sum(n)) %>%
+  ungroup() %>%
+  #filter(tot >= 30) %>%
+  group_by(ID, srtype) %>%
+  mutate(pct = n / sum(n))
+
+quad.pct.od %>%
+  filter(od == T) %>%
+  select(-od, -n) %>%
+  spread(key = srtype, value = pct)
+
+quad.pct.od %>%
+  filter(od == T,
+         !(srtype %in% c("SW-Dirty Street", "SW-Dirty Alley"))) %>%
+  ggplot(aes(ID, n)) +
+  geom_col(fill = iteam.colors[1]) +
+  coord_flip() +
+  facet_grid( ~ srtype, scales = "free") +
+  geom_text(aes(x = ID, 
+                y =  n, 
+                label = paste0(n, " (", round(100 *pct, 0),"%)"),
+                hjust = case_when(
+                  (srtype == "SW-HGW") & (n < 1500) ~ -0.1,
+                  (srtype == "SW-Cleaning") & (n < 400) ~ -0.1,
+                  (srtype == "SW-Boarding") & (n < 30) ~ -0.1,
+                  (srtype == "SW-Dirty Alley") & (n < 2000) ~ -0.1,
+                  (srtype == "SW-Dirty Street") & (n < 500) ~ -0.1,
+                  TRUE ~ 1.1
+                ),
+                family = "oswald"), 
+            size = 2.5,
+            color = "gray40") +
+  # scale_y_continuous(breaks = seq(0, 3500, 1000),
+  #                    #limits = c(0, 4100),
+  #                    minor_breaks = seq(0, 3800, 500)) +
+  theme_iteam_google_docs() + 
+  theme(axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        panel.grid.minor.x = element_line(size = .3, color = "gray90"),
+        panel.grid.major.x = element_line(size = .3, color = "gray90"),
+        panel.grid.major.y = element_blank(),
+        panel.spacing = unit(1, "lines"),
+        legend.position = "bottom",
+        plot.caption = element_text(face = "plain",
+                                    size = 7)) +
+  labs(title = "Number of Open & Overdue SRs",
+       caption = paste0("Open Baltimore as of ", today() -2)) 
+
+```
+
+```{r}
+
+```
+
+
+
+```{r fig.height = 1., fig.width = 3}
+#```{r fig.width = 3.8, fig.height = .9}
+quad.wo.count <- wo_geo@data %>%
+  mutate(year.created = year(`Date Create`)) %>%
+  filter(year.created == 2019,
+         !is.na(`Clean Size`),
+         !grepl("N/A", `Clean Size`),
+         !is.na(ID),
+         !is.na(`Clean Type`)) %>%
+  count(ID, `Clean Type`, `Clean Size`) %>%
+  group_by(ID, `Clean Type`) %>%
+  mutate(pct = n / sum(n),
+         #labels = paste0(100 * round(pct, 2), "%\n(", n, ")"))
+         labels = paste0("(", n, ")"))
+
+quad.wo.count %>%
+  ggplot(aes(ID,  pct, fill = `Clean Size`)) +
+  facet_grid(cols = vars(`Clean Type`)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  geom_text(aes(y = pct, label = ifelse(pct >= 0.10, n, ""), family = "oswald"),
+            position=position_stack(vjust=0.5),
+            size = 2.5) +
+  theme_iteam_google_docs() +
+  scale_fill_discrete_iteam() +
+  scale_y_continuous(labels = scales::percent,
+                     breaks = seq(0, 1, 0.5)) +
+  theme(axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.spacing = unit(1, "lines"),
+        legend.position = "bottom") 
+```
+
+```{r fig.width = 8ß}
+sr_geo@data %>%
+  filter(year(createddate) == 2019,
+         !is.na(closedate),
+         !is.na(ID),
+         !grepl("Duplicate", srstatus),
+         !grepl("Transferred", srstatus)) %>% 
+  mutate(Overdue = ifelse(closedate > duedate, T, F)) %>%
+  count(ID, srtype, Overdue) %>%
+  group_by(ID, srtype) %>%
+  mutate(pct = n / sum(n)) %>%
+  ggplot(aes(srtype, pct, fill = Overdue)) +
+  facet_grid(~ID) +
+  coord_flip() +
+  geom_col() +
+  geom_text(aes(y = pct, label = n, family = "oswald"),
+            position=position_stack(vjust=0.5),
+            size = 2.5) +
+  theme_iteam_presentations() +
+  scale_fill_discrete_iteam() +
+  scale_y_continuous(labels = scales::percent,  breaks = seq(0, 1, 0.5)) +
+  theme(axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.spacing = unit(1, "lines"),
+        legend.position = "bottom") 
+```
+
+```{r fig.height= = 8, fig.width= 8}
+
+sr_2019 <- sr_geo %>%
+  filter(year(sr_geo$createddate) == 2019,
+         !is.na(closedate),
+         !is.na(ID),
+         !grepl("Duplicate", srstatus),
+         !grepl("Transferred", srstatus),
+         srtype == "SW-Dirty Alley") %>%
+  mutate(Overdue = ifelse(closedate > duedate, T, F))
+
+colors <- iteam.colors[c(1,2)]
+
+pal <- colorFactor(colors, sr_2019$Overdue)
+
+leaflet() %>%
+  setView(lng = -76.6, lat = 39.3, zoom = 12) %>%
+  addProviderTiles(providers$Stamen.TonerLite) %>% 
+  addCircleMarkers(data = sr_2019,
+                   color = ~pal(sr_2019$Overdue),
+                   radius = 2) %>%
+  addPolygons(data = quads,
+              fillOpacity = 0,
+              color = "black",
+              weight = 3,
+              opacity = 1) %>%
+  addLegend(colors = colors, 
+            labels = c("Met", "Not Met"),
+            position = "bottomleft")
+```
+
+

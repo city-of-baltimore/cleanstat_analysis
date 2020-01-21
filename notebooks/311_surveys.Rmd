@@ -1,0 +1,58 @@
+---
+title: "311 Survey Data"
+author: "Justin Elszasz"
+email: "justin.elszasz@baltimorecity.gov"
+date: "Tuesday, August 6, 2019"
+output:
+  html_notebook:
+    code_folding: hide
+    fig_height: 5
+    fig_width: 10
+    toc: yes
+    toc_depth: 2
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include = T, echo = T, message = FALSE, cache = TRUE}
+knitr::opts_chunk$set(echo = T, 
+                      warning = F, 
+                      message = F,
+                      include = T,
+                      fig.width = 10,
+                      fig.height = 5)
+```
+
+```{r libraries}
+library(tidyverse)
+library(ggiteam)
+library(lubridate)
+library(readxl)
+library(rgdal)
+library(spdplyr)
+library(leaflet)
+library(RSocrata)
+library(zoo)
+```
+
+```{r}
+surveys.raw <- read_excel("../data/raw/311_survey/2019-10-10 Survey Report.xls", skip = 4)
+```
+
+```{r}
+surveys <- surveys.raw %>%
+  mutate(case_no_extract = ifelse(grepl("Case:", `Case: Service Request Type`), `Case: Service Request Type`, NA),
+         case_no_fill = na.locf(case_no_extract),
+         case_no = str_extract(case_no_fill, "[[:digit:]]{2}-[[:digit:]]+")) %>%
+  filter(!grepl("Case:", `Case: Service Request Type`),
+         !is.na(`Case: Service Request Type`)) %>%
+  select(-case_no_extract, -case_no_fill)
+```
+
+There are `r surveys %>% count(case_no) %>% nrow` unique surveys in this dataset.
+
+```{r}
+surveys %>% 
+  spread(key = )
+```
+

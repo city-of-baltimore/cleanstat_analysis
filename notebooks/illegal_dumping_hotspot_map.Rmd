@@ -1,0 +1,437 @@
+---
+title: "Illegal Dumping/Cleaning Hotspots"
+author: "Justin Elszasz"
+email: "justin.elszasz@baltimorecity.gov"
+date: "Tuesday, August 6, 2019"
+output:
+  html_notebook:
+    code_folding: hide
+    fig_height: 5
+    fig_width: 10
+    toc: yes
+    toc_depth: 2
+editor_options: 
+  chunk_output_type: inline
+---
+
+CleanStat used service request (SR) data from Salesforce and work order data from the CHIP work management system to determine possible "hotspots" for illegal dumping and other cleanliness issues. Salesforce and CHIP have the same address encoding, so joining the two datasets on address is possible. 
+
+There are multiple types of service requests and work orders that pertain to illegal dumping and cleanliness issues. CitiStat considered two groupings: **Inspections/Investigations** (residents identifying locations of possible illegal dumping) and **cleanup** (service requests and work orders pertaining to actual cleanup work performed by DPW).
+
+**Inspections/Investigations**
+
+- SR: HCD-Illegal Dumping
+- SR: HCD-Sanitation Property
+
+**Cleaning Activities**
+
+- SR: SW-Dirty Alley
+- SR: SW-Dirty Street
+- *SR: SW-Cleaning (REMOVED - DUPLICATIVE OF WORK ORDERS)*
+- SR: SW-SIU Clean-Up
+- WO: All Category 2 & 3 Cleaning 
+
+```{r setup, include = T, echo = T, message = FALSE, cache = TRUE}
+knitr::opts_chunk$set(echo = T, 
+                      warning = F, 
+                      message = F,
+                      include = T,
+                      fig.width = 10,
+                      fig.height = 5)
+```
+
+```{r libraries}
+library(tidyverse)
+#library(ggiteam)
+library(lubridate)
+library(readxl)
+library(rgdal)
+library(leaflet)
+
+iteam.colors <- c(
+  "#EAAB00", # yellow
+  "#666666", # med gray
+  "#5EB5CB", # blue
+  "#981E32", # maroon
+  "#0A83A1", # dark blue
+  "#f4d57f"  # pale yellow
+)
+```
+
+```{r load_data, echo = F}
+# read salesforce service requests
+sf_sw <- read_excel("../data/raw/salesforce/CleanStat_SW_311_salesforce.xlsx",
+                 col_types = "text",
+                 na = c("#ERROR"))
+  
+sf_hcd <- read_excel("../data/raw/salesforce/CleanStat_HCD_311_salesforce.xlsx",
+                     col_types = "text",
+                     na = c("#ERROR"))
+
+sf_siu <- read_excel("../data/raw/salesforce/SW_SIU_Clean_Up_salesforce.xlsx",
+                     col_types = "text",
+                     na = c("#ERROR"))
+
+sf_dirty <- read_excel("../data/raw/salesforce/SW_DirtyAlley_DirtyStreet_311_salesforce.xlsx",
+                     col_types = "text",
+                     na = c("#ERROR"))
+
+# real property table for blcok lookup if necessary
+real_prop <- read_csv("../data/raw/Real_Property_Taxes.csv")
+
+# work order data from CHIP table on SQL db
+wo_sql <- read_excel("../data/raw/chip/CHIP_WO_sql.xlsx",
+                     col_types = "text",
+                     na = "N/A") %>%
+  mutate(`Date Create` = as.Date(as.numeric(`Date Create`), origin = "1899-12-30")) %>%
+  filter(`Date Create` >= "2018-01-01")
+
+# parcels shapefile from Open Baltimore
+parcels <- readOGR("../data/raw/parcels/parcels.shp", verbose = F)
+
+street_segments <- readOGR("../data/raw/Buffer_of_Streets_and_311_v3/Buffer_of_Streets_and_311_v3.shp", verbose = F)
+
+quads <- readOGR("../data/raw/DPW Quadrant Shapefile/SW_Quadrants_Polygon_New.shp", verbose = F)
+
+promow <- read_excel("../data/raw/ProMow_MCCPropertyList_20190730.xlsx")
+```
+
+
+
+
+```{r}
+dpw_facilities <- c("417 E FAYETTE ST",
+                    "3939 REISTERSTOWN RD",
+                    "3411 BANK ST",
+                    "5225 YORK RD")
+```
+
+```{r}
+sf <- sf_sw %>% 
+  bind_rows(sf_hcd) %>%
+  bind_rows(sf_siu) %>%
+  bind_rows(sf_dirty) %>%
+  replace_na(list(`Block Number` = "", `Street No` = "", `Street Name` = "")) %>%
+  mutate(date_opened = as.Date(as.numeric(`Opened Date`), origin = "1899-12-30"),
+         lat = as.numeric(`Location (Latitude)`),
+         long = as.numeric(`Location (Longitude)`),
+         street_address = paste(`Street No`, `Street Name`)) %>%
+  rename(street_name = `Street Name`) %>% 
+  left_join(real_prop, by = c("street_address" = "PropertyAddress")) %>%
+  mutate(street_num = as.numeric(`Street No`))
+
+wo_sql <- wo_sql %>%
+  mutate(`Clean Type` = ifelse(is.na(`Clean Type`), 
+                               "BOARDING (not cleaning)", 
+                               `Clean Type`)) %>%
+  replace_na(list(Direction = "", `Street Name` = "", `Street Attr` = "")) %>%
+  mutate(date_created = as.Date(`Date Create`),
+         street_address = paste(`House Number`, Direction, `Street Name`, `Street Attr`),
+         street_name = paste(Direction, `Street Name`, `Street Attr`),
+         street_num = as.numeric(`House Number`))
+```
+
+```{r}
+sf_address_counts <- sf %>% 
+  filter(
+         date_opened >= "2018-01-01",
+         !is.na(street_num),
+         !is.na(street_name),
+         !(street_address %in% dpw_facilities)) %>%
+  count(Block, street_num, street_name, `Service Request Type`) %>%
+  spread(key = `Service Request Type`, 
+         value = n) %>%
+  replace_na(list(`HCD-Illegal Dumping` = 0,
+                  `HCD-Sanitation Property` = 0,
+                  `HCD-Vacant Building` = 0,
+                  `SW-Boarding` = 0,
+                  `SW-Cleaning` = 0,
+                  `SW-HGW` = 0,
+                  `SW-SIU Clean Up` = 0,
+                  `SW-Dirty Alley` = 0,
+                  `SW-Dirty Street` = 0,
+                  `SW-Dirty Alley Proactive` = 0,
+                  `SW-Dirty Street Proactive` = 0)) %>%
+  mutate(sf_count = `HCD-Illegal Dumping` +
+           `HCD-Sanitation Property` +
+           `HCD-Vacant Building` +
+           `SW-Boarding` +
+           `SW-Cleaning` +
+           `SW-HGW` +
+           `SW-SIU Clean Up` +
+           `SW-Dirty Alley` +
+           `SW-Dirty Street` +
+           `SW-Dirty Alley Proactive` +
+           `SW-Dirty Street Proactive`
+
+  )
+
+```
+
+
+
+```{r}
+wo_address_counts <- wo_sql %>% 
+  filter(date_created >= "2018-01-01",
+         `Clean Type` %in% c("HIGH GRASS & WEEDS",
+                          "TRASH & DEBRIS",
+                          "TRASH, DEBRIS, HIGH GRASS & WEEDS",
+                          "BOARDING (not cleaning)"),
+         !is.na(street_address),
+         !grepl("Descriptive", street_name),
+         !(street_address %in% dpw_facilities)) %>%
+  count(Block, street_num, street_name, `Clean Type`) %>% 
+  spread(key = `Clean Type`, value = n) %>%
+  replace_na(list(
+    "HIGH GRASS & WEEDS" = 0 ,
+    "TRASH & DEBRIS" = 0,
+    "TRASH, DEBRIS, HIGH GRASS & WEEDS" = 0,
+    "BOARDING (not cleaning)" = 0)) %>%
+  mutate(wo_count = `HIGH GRASS & WEEDS` + 
+           `TRASH & DEBRIS` +
+           `TRASH, DEBRIS, HIGH GRASS & WEEDS` +
+           `BOARDING (not cleaning)`)
+
+wo_cat23_address_counts <- wo_sql %>% 
+  filter(date_created >= "2018-01-01",
+         `Clean Type` %in% c("HIGH GRASS & WEEDS",
+                          "TRASH & DEBRIS",
+                          "TRASH, DEBRIS, HIGH GRASS & WEEDS",
+                          "BOARDING (not cleaning)"),
+         !is.na(street_address),
+         !grepl("Descriptive", street_name),
+         !(street_address %in% dpw_facilities),
+         `Clean Size` %in% c(2, 3)) %>%
+  count(Block, street_num, street_name, `Clean Type`) %>% 
+  spread(key = `Clean Type`, value = n) %>%
+  replace_na(list(
+    "HIGH GRASS & WEEDS" = 0 ,
+    "TRASH & DEBRIS" = 0,
+    "TRASH, DEBRIS, HIGH GRASS & WEEDS" = 0,
+    "BOARDING (not cleaning)" = 0)) %>%
+  rename(hgw_cat23 = "HIGH GRASS & WEEDS",
+         td_cat23 = "TRASH & DEBRIS",
+         td_hgw_cat23 = "TRASH, DEBRIS, HIGH GRASS & WEEDS") %>%
+  mutate(wo_cat23_count = hgw_cat23 + td_cat23 + td_hgw_cat23)
+```
+
+## Counts by Address
+
+```{r}
+address_counts_join <- wo_address_counts %>%
+  full_join(sf_address_counts, 
+            by = c("street_num", "street_name")) %>%
+  full_join(wo_cat23_address_counts %>% 
+              select(
+                street_num,
+                street_name,
+                hgw_cat23,
+                td_cat23,
+                td_hgw_cat23,
+                wo_cat23_count
+              ), 
+            by = c("street_num", "street_name")) %>%
+  replace_na(list(
+    `HIGH GRASS & WEEDS` = 0,
+    `TRASH & DEBRIS` = 0,
+    `TRASH, DEBRIS, HIGH GRASS & WEEDS` = 0,
+    `BOARDING (not cleaning)` = 0,
+    `HCD-Illegal Dumping` = 0,
+    `HCD-Sanitation Property` = 0,
+    `HCD-Vacant Building` = 0,
+    `SW-Boarding` = 0,
+    `SW-Cleaning` = 0,
+    `SW-HGW` = 0,
+    `SW-SIU Clean Up` = 0,
+    `SW-Dirty Alley` = 0,
+    `SW-Dirty Street` = 0,
+    `SW-Dirty Alley Proactive` = 0,
+    `SW-Dirty Street Proactive` = 0,
+    wo_count = 0,
+    sf_count = 0,
+    hgw_cat23 = 0,
+    td_cat23 = 0,
+    td_hgw_cat23 = 0,
+    wo_cat23_count = 0)) %>%
+  mutate(all_events = wo_count + sf_count,
+         diff_events = wo_count - sf_count,
+         Block = ifelse(!is.na(Block.x), Block.x, Block.y),
+         reporting = `HCD-Illegal Dumping` + `HCD-Sanitation Property`,
+         cleanup =  `SW-Dirty Alley` + `SW-Dirty Street` + 
+         `SW-Dirty Alley Proactive` + `SW-Dirty Street Proactive`
+         + `SW-SIU Clean Up` + wo_cat23_count)
+
+address_counts_join
+```
+
+
+
+## Counts by Block
+
+```{r}
+block_counts <- address_counts_join %>%
+  filter(!is.na(Block)) %>%
+  select(-street_num, -street_name, -Block.x, -Block.y, -diff_events) %>%
+  group_by(Block) %>%
+  summarise_all(sum, na.rm=T) %>%
+  ungroup() %>%
+  arrange(desc(all_events)) 
+
+block_counts
+```
+
+Belows is a cumulative percentage plot showing the number of blocks responsible for a given percentage of category 3 work orders.
+
+**189 blocks, or 14% of all blocks receiving a category 3 work order since January 1, 2018, are responsible for 50% of all category 3 work orders.**
+
+```{r fig.width = 4, fig.height = 2}
+x <- 0.25
+# Responsible for 50% of work orders
+wo_cum <- wo_sql %>%
+  filter(`Clean Size` == 3,
+         date_created >= "2018-01-01",
+         `Clean Type` %in% c("HIGH GRASS & WEEDS",
+                             "TRASH & DEBRIS",
+                             "TRASH, DEBRIS, HIGH GRASS & WEEDS"),
+         #!is.na(street_address),
+         !grepl("Descriptive", street_name),
+         !(street_address %in% dpw_facilities)) %>%
+  count(Block) %>%
+  arrange(desc(n)) %>%
+  mutate(row_n = row_number(),
+         cum_blocks = row_n / max(row_n),
+         cumsum_sr = cumsum(n),
+         cumpct_sr = cumsum_sr / sum(n))
+
+wo_cum_50pct <- wo_cum %>%
+  filter(abs(x - cumpct_sr) == min(abs(x - cumpct_sr))) %>%
+  select(row_n) %>%
+  pull()
+
+wo_cum %>%
+  ggplot(aes(row_n, cumpct_sr)) +
+  geom_line() +
+  theme_minimal() +
+  #theme_iteam_google_docs() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Number of City Blocks",
+       y = "% Category 3 Cleaning")
+```
+
+```{r}
+wo_cum_50pct_df <- wo_cum %>%
+  filter(row_n <=wo_cum_50pct)
+
+wo_cum_50pct_parcels <- subset(parcels, parcels$BLOCKNUM %in%
+                                         wo_cum_50pct_df$Block)
+```
+
+# Map
+
+```{r}
+block_top100_reporting <- block_counts %>%
+  arrange(desc(reporting)) %>%
+  top_n(100, reporting) %>%
+  mutate(id_rank = row_number())
+
+block_top100_cleanup <- block_counts %>%
+  arrange(desc(cleanup)) %>%
+  top_n(100, cleanup) %>%
+  mutate(id_rank = row_number())
+
+block_top100_reporting_cleanup <- block_top100_reporting %>%
+  inner_join(block_top100_cleanup, by = "Block")
+```
+
+
+```{r}
+block_top100_reporting_parcels <- subset(parcels, parcels$BLOCKNUM %in%
+                                         block_top100_reporting$Block)
+
+block_top100_cleanup_parcels <- subset(parcels, parcels$BLOCKNUM %in%
+                                    block_top100_cleanup$Block)
+
+open_wo <- wo_sql %>% filter(Status %in% c("NEW", "PENDING"),
+                             !is.na(Latitude)) %>%
+  mutate(Latitude = as.numeric(Latitude),
+         Longitude = as.numeric(Longitude))
+
+open_sr <- sf %>% filter(is.na(`Closed Date`),
+                         `Date/Time Opened` >= "2018-01-01",
+                         !is.na(`Location (Latitude)`)) %>%
+  mutate(`Location (Latitude)` = as.numeric(`Location (Latitude)`),
+         `Location (Longitude)` = as.numeric(`Location (Longitude)`))
+```
+
+```{r fig.width=10, fig.height = 6}
+library(htmltools)
+top_street_segments <- subset(street_segments)
+
+map_colors <- c(iteam.colors[5],
+                iteam.colors[1],
+                iteam.colors[4],
+                "blue",
+                "red")
+
+map_labels <- c("Top 100 for Inspection/Investigation", 
+                "Top 100 for Cleaning Activity",
+                "50% of Cat 3 Work Orders",
+                "Open Work Orders",
+                "Open Service Requests")
+
+open_wo_labels <- paste0("Open Work Order", "<br>",
+                         open_wo$`Street Address`, "<br>",
+                         open_wo$`Property Owner`, "<br>",
+                         open_wo$`Work Order Type`, "<br>",
+                         open_wo$`Clean Type`, "<br>",
+                         "Category: ", open_wo$`Clean Size`)
+
+open_sr_labels <- paste0("Open Service Request <br>",
+                         open_sr$street_address, "<br>",
+                         open_sr$`Service Request Type`, "<br>",
+                         open_sr$`Activity Assigned To`, "<br>",
+                         "Date Openend: ", open_sr$`Opened Date`)
+leaflet() %>%
+  setView(lng = -76.6, lat = 39.3, zoom = 12) %>%
+  addProviderTiles(providers$Stamen.TonerLite) %>% 
+  addPolygons(data = quads,
+              fillOpacity = 0,
+              color = "black",
+              weight = 1.5) %>%
+  addPolygons(data = block_top100_reporting_parcels,
+              fillOpacity = 0.6,
+              fillColor = map_colors[1],
+              opacity = 0,
+              group = map_labels[1]) %>%
+  addPolygons(data = block_top100_cleanup_parcels,
+              fillOpacity = 0.6,
+              fillColor = map_colors[2],
+              opacity = 0,
+              group = map_labels[2]) %>%
+    addPolygons(data = wo_cum_50pct_parcels,
+              fillOpacity = 0.6,
+              fillColor = map_colors[3],
+              opacity = 0,
+              group = map_labels[3]) %>%
+  addCircleMarkers(data = open_wo,
+                   lat = open_wo$Latitude,
+                   lng = open_wo$Longitude,
+                   radius = 2,
+                   label = ~lapply(open_wo_labels, HTML),
+                   group = map_labels[4],
+                   fillColor = map_colors[4],
+                   opacity = 0) %>%
+    addCircleMarkers(data = open_sr,
+                   lat = open_sr$`Location (Latitude)`,
+                   lng = open_sr$`Location (Longitude)`,
+                   radius = 2,
+                   label = ~lapply(open_sr_labels, HTML),
+                   group = map_labels[5],
+                   fillColor = map_colors[5],
+                   opacity = 0) %>%
+  addLayersControl(overlayGroups = map_labels) %>%
+  addLegend(position = "bottomright",
+            colors = map_colors,
+            labels = map_labels)
+
+```

@@ -1,0 +1,62 @@
+---
+title: "stuff"
+author: "Justin Elszasz"
+email: "justin.elszasz@baltimorecity.gov"
+date: "Tuesday, August 6, 2019"
+output:
+  html_notebook:
+    code_folding: hide
+    fig_height: 5
+    fig_width: 10
+    toc: yes
+    toc_depth: 2
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include = T, echo = T, message = FALSE, cache = TRUE}
+knitr::opts_chunk$set(echo = T, 
+                      warning = F, 
+                      message = F,
+                      include = T,
+                      fig.width = 10,
+                      fig.height = 5)
+```
+
+```{r libraries}
+library(tidyverse)
+library(ggiteam)
+library(lubridate)
+library(readxl)
+library(rgdal)
+library(spdplyr)
+library(leaflet)
+library(RSocrata)
+```
+
+```{r}
+query <- paste0("https://data.baltimorecity.gov/resource/9agw-sxsr.json",
+                "?$where=",
+                "(srtype like 'SW-Boarding' OR ",
+                "srtype like 'SW-Cleaning' OR ",
+                "srtype like 'SW-HGW' OR ",
+                "srtype like 'SW-Dirty Alley' OR ",
+                "srtype like 'SW-Dirty Street' OR ",
+                "srtype like 'HCD-Illegal Dumping' OR ",
+                "srtype like 'HCD-SIU' OR ",
+                "srtype like 'HCD-Sanitation Property')")
+
+sr <- read.socrata(url = query)
+
+sr <- sr %>% mutate(latitude = as.numeric(latitude), longitude = as.numeric(longitude))
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+

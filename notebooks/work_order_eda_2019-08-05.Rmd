@@ -1,0 +1,292 @@
+---
+title: "CHIP Work Order EDA"
+author: "Justin Elszasz"
+email: "justin.elszasz@baltimorecity.gov"
+date: "Tuesday, July 16, 2019"
+output:
+  html_notebook:
+    code_folding: hide
+    fig_height: 5
+    fig_width: 10
+    toc: yes
+    toc_depth: 2
+---
+
+```{r setup, include = T, echo = FALSE, message = FALSE, cache = TRUE}
+knitr::opts_chunk$set(echo = T, warning = F, message = F, include = T,
+                                 fig.width = 10, fig.height = 5)
+```
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(ggiteam)
+library(RcppRoll)
+library(zoo)
+```
+
+```{r}
+wo_sql <- read_excel("../data/raw/chip/CHIP_WO_sql.xlsx",
+                     col_types = "text",
+                     na = "N/A") %>%
+  mutate(date_created= as.Date(as.numeric(`Date Create`), origin = "1899-12-30"),
+         date_finish= as.Date(as.numeric(`Date Finish`), origin = "1899-12-30")) %>%
+  filter(date_created >= "2018-01-01") %>%
+  mutate(`Clean Type` = ifelse(is.na(`Clean Type`), 
+                               "BOARDING (not cleaning)", 
+                               `Clean Type`)) 
+```
+
+
+```{r fig.width = 4, fig.height = 4.5}
+mcc_list <- c("MAYOR AND CITY COUNCIL OF",
+                "MAYOR & CITY COUNCIL",
+                "MAYOR AND CITY COUNCIL",
+                "MAYOR & CITY COUNCIL OF BALTIMORE",
+                "MAYOR & CITY COUNCIL OF")
+# 
+# wo_sql <- wo_sql %>%
+#   mutate(`Clean Type` = case_when(
+#     `Clean Type` == "HIGH GRASS & WEEDS" ~ "HGW",
+#     `Clean Type` == "TRASH, DEBRIS, HIGH GRASS & WEEDS" ~ "TRASH, DEBRIS, HGW",
+#     `Clean Type` == "TRASH & DEBRIS" ~ "TRASH & DEBRIS",
+#     `Clean Type` == "BOARDING (not cleaning)" ~ "Boarding",
+#     TRUE ~ NA_character_
+# 
+#   ))
+
+wo_sql_rolling_by_type_cat <- wo_sql %>%
+  filter(!is.na(`Clean Size`),
+         `Clean Type` != "Boarding"
+         ) %>%
+  mutate(
+    time_to_finish = (date_finish - date_created)/ddays(1),
+    mcc = ifelse(`Property Owner` %in% mcc_list, "MCC", "Non-MCC")) %>%
+  group_by(`Clean Type`, `Clean Size`, mcc) %>%
+  complete(
+    date_finish = seq.Date(
+      as.Date(min(wo_sql$date_finish, na.rm = T)), 
+      as.Date(max(wo_sql$date_finish, na.rm = T)),
+      by = "day")
+  ) %>%
+  group_by(date_finish, `Clean Type`, `Clean Size`, mcc) %>%
+  summarise(day_mean_duration = mean(time_to_finish, na.rm =T)) %>%
+  ungroup() %>%
+  mutate(day_mean_duration = na_if(day_mean_duration, "NaN")) %>%
+  group_by(`Clean Type`, `Clean Size`, mcc) %>%
+  mutate(
+    roll90_median = 
+      rollapply(
+        data = day_mean_duration, 
+        FUN = median,
+        na.rm = T, width = 90, by = 1, align = "right", partial = T
+      ),
+    roll90_mean = 
+            rollapply(
+        data = day_mean_duration, 
+        FUN = mean,
+        na.rm = T, width = 90, by = 1, align = "right", partial = T
+      ),
+  )
+
+wo_sql_rolling_by_type_cat %>% 
+  ggplot(aes(x = date_finish, y = roll90_median)) +
+  facet_grid(rows = vars(`Clean Type`), cols = vars(`Clean Size`),
+             switch = "y") +
+  #facet_wrap(~`Clean Type` + `Clean Size`) +
+  geom_line(aes(color = mcc)) +
+  geom_vline(aes(xintercept = as.Date("2019-05-08")),
+             color = iteam.colors[2],
+             linetype="dotted") +
+  theme_iteam_google_docs() + 
+  scale_color_discrete_iteam() +
+  labs(y = "Rolling 90-day Median Duration (Days)",
+       title ="Cleaning Work Order Duration") +
+  theme(axis.title.x = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "bottom") +
+  scale_x_date(limits = c(as.Date("2018-05-31"), as.Date("2019-09-01")),
+               breaks = as.Date(c("2018-06-01", "2018-12-01", "2019-06-01")),
+               date_labels = "%b\n%Y") 
+```
+
+
+```{r fig.width = 4, fig.height = 1.5}
+wo_sql_rolling_by_type_cat <- wo_sql %>%
+  filter(!is.na(`Clean Size`),
+         `Clean Type` != "BOARDING (not cleaning)"
+         ) %>%
+  mutate(
+    time_to_finish = (date_finish - date_created)/ddays(1),
+    mcc = ifelse(`Property Owner` %in% mcc_list, "MCC", "Non-MCC")) %>%
+  complete(
+    date_finish = seq.Date(
+      as.Date(min(wo_sql$date_finish, na.rm = T)), 
+      as.Date(max(wo_sql$date_finish, na.rm = T)),
+      by = "day")
+  ) %>%
+  group_by(date_finish) %>%
+  summarise(day_mean_duration = mean(time_to_finish, na.rm =T)) %>%
+  ungroup() %>%
+  mutate(day_mean_duration = na_if(day_mean_duration, "NaN")) %>%
+  mutate(
+    roll90_median = 
+      rollapply(
+        data = day_mean_duration, 
+        FUN = median,
+        na.rm = T, width = 90, by = 1, align = "right", partial = T
+      ),
+    roll90_mean = 
+            rollapply(
+        data = day_mean_duration, 
+        FUN = mean,
+        na.rm = T, width = 90, by = 1, align = "right", partial = T
+      ),
+  )
+
+wo_sql_rolling_by_type_cat %>% 
+  ggplot(aes(x = date_finish, y = roll90_median)) +
+  # facet_grid(rows = vars(`Clean Type`), cols = vars(`Clean Size`),
+  #            switch = "y") +
+  #facet_wrap(~`Clean Type` + `Clean Size`) +
+  geom_line() +
+  geom_vline(aes(xintercept = as.Date("2019-05-08")),
+             color = iteam.colors[2],
+             linetype="dotted") +
+  theme_iteam_google_docs() + 
+  scale_color_discrete_iteam() +
+  labs(y = "Rolling 90-day\nMedian Duration (Days)",
+       title ="Cleaning Work Order Duration") +
+  theme(axis.title.x = element_blank(),
+        legend.title = element_blank()) +
+  scale_x_date(limits = c(as.Date("2018-06-01"), as.Date("2019-09-01")),
+               date_breaks = "6 months",
+               date_labels = "%b\n%Y") 
+```
+
+
+
+```{r fig.width = 4, fig.height = 2}
+wo_sql_rolling <- wo_sql %>%
+  filter(!is.na(`Clean Size`),
+         `Clean Type` != "BOARDING (not cleaning)") %>%
+  mutate(
+    time_to_finish = (date_finish - date_created)/ddays(1)) %>%
+  #group_by(`Clean Type`, `Clean Size`) %>%
+  complete(
+    date_finish = seq.Date(
+      as.Date(min(wo_sql$date_finish, na.rm = T)), 
+      as.Date(max(wo_sql$date_finish, na.rm = T)),
+      by = "day")
+  ) %>%
+  group_by(date_finish) %>%
+  #group_by(date_finish, `Clean Type`, `Clean Size`) %>%
+  summarise(day_mean_duration = mean(time_to_finish, na.rm =T)) %>%
+  ungroup() %>%
+  mutate(day_mean_duration = na_if(day_mean_duration, "NaN")) %>%
+  #group_by(`Clean Type`, `Clean Size`) %>%
+  mutate(
+    roll90_median = 
+      rollapply(
+        data = day_mean_duration, 
+        FUN = median,
+        na.rm = T, width = 90, by = 1, align = "right", partial = T
+      ),
+    roll90_mean = 
+            rollapply(
+        data = day_mean_duration, 
+        FUN = mean,
+        na.rm = T, width = 90, by = 1, align = "right", partial = T
+      ),
+  )
+
+wo_sql_rolling %>% 
+  ggplot(aes(x = date_finish, y = roll90_median)) +
+  geom_line() +
+  geom_vline(aes(xintercept = as.Date("2019-05-08")),
+             color = iteam.colors[2],
+             linetype="dotted") +
+  theme_iteam_google_docs() + 
+  labs(y = "Rolling 90-day\nMedian Duration (Days)",
+       title = "All Cleaning Work Orders") +
+  theme(axis.title.x = element_blank())
+```
+
+```{r fig.width = 4, fig.height = 4}
+wo_sql %>%
+  mutate(month_opened = floor_date(date_created, "month")) %>%
+  filter(!is.na(`Clean Size`),
+         `Clean Type` != "Boarding") %>%
+  count(month_opened, `Clean Type`, `Clean Size`) %>%
+  ggplot(aes(month_opened, n)) +
+    facet_grid(rows = vars(`Clean Type`), cols = vars(`Clean Size`),
+             switch = "y") +
+  # facet_wrap(~`Clean Type` + `Clean Size`) +
+  geom_col() +
+  theme_iteam_google_docs() +
+  labs(
+       title ="Work Orders Created") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  scale_x_date(limits = c(as.Date("2018-06-01"), as.Date("2019-09-01")),
+               breaks = as.Date(c("2018-06-01", "2018-12-01", "2019-06-01")),
+               date_labels = "%b\n%Y") 
+
+
+
+```
+
+```{r}
+
+
+roll90_mcc <- wo_sql %>%
+  filter(!is.na(`Clean Size`),
+         `Clean Type` != "BOARDING (not cleaning)") %>%
+  mutate(
+    time_to_finish = (date_finish - date_created)/ddays(1),
+    mcc = ifelse(`Property Owner` %in% mcc_list, "MCC", "Non-MCC")) %>%
+  group_by(`Clean Type`, mcc) %>%
+  complete(
+    date_finish = seq.Date(
+      as.Date(min(wo_sql$date_finish, na.rm = T)), 
+      as.Date(max(wo_sql$date_finish, na.rm = T)),
+      by = "day")
+  ) %>%
+  group_by(date_finish, `Clean Type`, mcc) %>%
+  summarise(day_mean_duration = mean(time_to_finish, na.rm =T)) %>%
+  ungroup() %>%
+  mutate(day_mean_duration = na_if(day_mean_duration, "NaN")) %>%
+  group_by(`Clean Type`, mcc) %>%
+  mutate(
+    roll90_median = 
+      rollapply(
+        data = day_mean_duration, 
+        FUN = median,
+        na.rm = T, width = 90, by = 1, align = "right", partial = T
+      ),
+    roll90_mean = 
+            rollapply(
+        data = day_mean_duration, 
+        FUN = mean,
+        na.rm = T, width = 90, by = 1, align = "right", partial = T
+      ),
+  )
+
+roll90_mcc %>%
+  ggplot(aes(x = date_finish, y = roll90_median)) +
+  facet_grid(rows = vars(mcc), cols = vars(`Clean Type`)) +
+  geom_line() +
+  geom_vline(aes(xintercept = as.Date("2019-05-08")),
+             color = iteam.colors[2],
+             linetype="dotted") +
+  theme_iteam_google_docs() + 
+  labs(y = "Rolling 90-day Median Duration (Days)",
+       title ="Cleaning Work Order Duration") +
+  theme(axis.title.x = element_blank()) +
+  scale_x_date(limits = c(as.Date("2018-01-01"), as.Date("2019-09-01")),
+               date_breaks = "6 months",
+               date_labels = "%b\n%Y") 
+```
+
+

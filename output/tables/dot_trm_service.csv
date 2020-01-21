@@ -1,0 +1,6 @@
+srtype,closedate <= duedate,n,pct,records
+TRM-Debris Hanging From Wires or Poles,TRUE,93,0.9029126213592233,103
+TRM-Graffiti Referral,TRUE,38,0.5277777777777778,72
+TRM-Grass Mowing,TRUE,471,0.7104072398190046,663
+TRM-StLight Damaged/Knocked Down/Rusted,TRUE,727,0.8150224215246636,892
+TRM-StLighting Inadequate/Too Bright,TRUE,176,0.7272727272727273,242

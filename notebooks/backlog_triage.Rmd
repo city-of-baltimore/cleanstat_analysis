@@ -1,0 +1,119 @@
+---
+title: "stuff"
+author: "Justin Elszasz"
+email: "justin.elszasz@baltimorecity.gov"
+date: "Tuesday, August 6, 2019"
+output:
+  html_notebook:
+    code_folding: hide
+    fig_height: 5
+    fig_width: 10
+    toc: yes
+    toc_depth: 2
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include = T, echo = T, message = FALSE, cache = TRUE}
+knitr::opts_chunk$set(echo = T, 
+                      warning = F, 
+                      message = F,
+                      include = T,
+                      fig.width = 10,
+                      fig.height = 5)
+```
+
+```{r libraries}
+library(tidyverse)
+library(ggiteam)
+library(lubridate)
+library(readxl)
+library(rgdal)
+library(spdplyr)
+library(leaflet)
+library(RSocrata)
+library(lubridate)
+```
+
+```{r load_data, echo = F}
+#real_prop <- read_csv("../data/raw/Real_Property_Taxes.csv")
+
+#parcels <- readOGR("../data/raw/parcels/parcels.shp", verbose = F)
+
+
+quads <- readOGR("../data/raw/DPW Quadrant Shapefile/SW_Quadrants_Polygon_New.shp", verbose = F)
+
+wo <- read_csv("../data/raw/chip/2019-09-30_CHIP_CleaingWOs.csv",
+               skip = 3)
+
+#wo <- wo %>% mutate(Latitude = as.numeric(Latitude), Longitude = as.numeric(Longitude))
+```
+
+```{r}
+wo <- wo %>%
+  mutate(create_date = mdy_hms(DateCreate),
+         close_date = mdy_hms(DateFinish),
+         age = round(as.numeric(difftime(today(), create_date, units = "days")), 0),
+         sf_translation = case_when(
+           CleanType == "TRASH & DEBRIS" ~ "SW-Cleaning",
+           TRUE ~ "SW-HGW"
+         ))
+```
+
+```{r}
+wo %>%
+  filter(Status %in% c("NEW", "PENDING"),
+         !is.na(CleanType),
+         !is.na(CleanSize)) %>%
+  group_by(CleanType, CleanSize) %>%
+  summarise(n = n(),
+            mean_age = mean(age, na.rm = T),
+            median_age = median(age, na.rm = T)) 
+```
+
+```{r}
+wo %>%
+  filter(Status %in% c("NEW", "PENDING"),
+         sf_translation == "SW-HGW",
+         CleanSize == 1) %>%
+  ggplot(aes(age)) +
+  geom_histogram(bins = 100) +
+  geom_vline(xintercept = 170)
+```
+
+```{r fig.width = 2.5, fig.height = 1.5}
+
+wo %>%
+  filter(Status %in% c("NEW", "PENDING"),
+         !is.na(sf_translation),
+         !is.na(CleanSize),
+         age > 30) %>%
+  ggplot(aes(CleanSize, age)) +
+  geom_jitter(alpha = 0.2, color = "gray20") +
+  facet_wrap(~sf_translation) +
+  theme_iteam_google_docs() +
+  scale_color_discrete_iteam() +
+  labs(title = "Age of Open Service Requests",
+       y = "Age of Open SR (Days)")
+
+```
+```{r}
+wo %>%
+  filter(Status %in% c("NEW", "PENDING"),
+         sf_translation == "SW-Cleaning",
+         age > 30) %>%
+  nrow
+  
+```
+
+
+```{r}
+
+wo %>%
+  filter(Status %in% c("NEW", "PENDING")) %>%
+  nrow
+```
+
+
+
+

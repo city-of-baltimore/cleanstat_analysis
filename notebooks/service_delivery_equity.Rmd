@@ -1,0 +1,258 @@
+---
+title: "Service Delivery Equity"
+author: "Justin Elszasz"
+email: "justin.elszasz@baltimorecity.gov"
+date: "Tuesday, September 30, 2019"
+output:
+  html_notebook:
+    code_folding: hide
+    fig_height: 5
+    fig_width: 10
+    toc: yes
+    toc_depth: 2
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include = T, echo = T, message = FALSE, cache = TRUE}
+knitr::opts_chunk$set(echo = T, 
+                      warning = F, 
+                      message = F,
+                      include = T,
+                      fig.width = 10,
+                      fig.height = 5)
+```
+
+```{r libraries}
+library(tidyverse)
+#library(ggiteam)
+library(lubridate)
+library(readxl)
+library(rgdal)
+library(leaflet)
+library(ggiteam)
+library(RSocrata)
+library(tmap)
+library(sf)
+source("../src/00_initialize.R")
+```
+
+```{r load_data, echo = F}
+
+quadrants <- readOGR("../data/raw/DPW Quadrant Shapefile/SW_Quadrants_Polygon_New.shp", verbose = F)
+
+#promow <- read_excel("../data/raw/ProMow_MCCPropertyList_20190730.xlsx")
+
+query <- paste0("https://data.baltimorecity.gov/resource/9agw-sxsr.json",
+                "?$where=",
+                "((srtype like 'SW-Boarding' OR ",
+                "srtype like 'SW-Cleaning' OR ",
+                "srtype like 'SW-HGW' OR ",
+                "srtype like 'SW-Dirty Alley' OR ",
+                "srtype like 'SW-Dirty Street') AND (date_trunc_y(CreatedDate) = '2019'))")
+
+service_requests <- read.socrata(url = query)
+
+service_requests <- service_requests %>% 
+  mutate(
+    latitude = as.numeric(latitude), 
+    longitude = as.numeric(longitude))
+
+#wo <- read_csv("../data/raw/chip/2019-08-30_chip_export.csv")
+#wo <- wo %>% mutate(Latitude = as.numeric(Latitude), Longitude = as.numeric(Longitude))
+
+
+#dot_query <- paste0("https://data.baltimorecity.gov/resource/9agw-sxsr.json",
+#                "?$where=",
+#                "(agency like 'Transportation' AND ",
+#                "date_extract_y(createddate) >= 2017)")
+#dot_service_requests <- read.socrata(url = dot_query)
+#dot_service_requests <- dot_service_requests %>% 
+#  mutate(
+#    latitude = as.numeric(latitude), 
+#    longitude = as.numeric(longitude))
+
+#neighborhoods <- get_neighborhood_boundaries()
+#demographics <- read_excel("../data/raw/Neighborhood Pop.xlsx")
+
+#neighborhoods@data <- neighborhoods@data %>%
+  left_join(demographics, by = c("label" = "Name"))
+
+#neighborhoods <- spTransform(neighborhoods, CRS("+init=epsg:4326"))
+```
+
+```{r}
+service_requests <- SpatialPointsDataFrame(
+  coords = service_requests %>% 
+    select(longitude, latitude) %>%
+    mutate_all(funs(as.numeric)) %>%
+    filter(!is.na(latitude)), 
+  data = service_requests %>% filter(!is.na(latitude)), 
+  proj4string = CRS("+init=epsg:4326")
+)
+
+service_requests <- spTransform(service_requests, "+init=epsg:4326")
+```
+
+
+```{r}
+# service_requests@data <- service_requests@data %>%
+#   left_join(over(service_requests, neighborhoods), by = c("neighborhood" = "label"))
+```
+
+```{r}
+sr_delivery_by_hood <- service_requests@data %>%
+  filter(year(createddate) == 2019) %>%
+  mutate(srduration = as.numeric(difftime(closedate, createddate, units = "days"))) %>%
+  select(neighborhood, srtype, srduration) %>%
+  group_by(neighborhood, srtype) %>%
+  summarise(mean_duration = mean(srduration, na.rm = T),
+            med_duration = median(srduration, na.rm = T),
+            n = n())
+```
+
+
+```{r}
+neighborhoods_sf <- st_as_sf(neighborhoods) %>%
+  left_join(sr_delivery_by_hood, by = c("label" = "neighborhood")) %>%
+  left_join(demographics, by = c("label" = "Name"))
+```
+
+
+
+
+```{r fig.width = 14, fig.height = 4}
+med_duration_by_hood <- neighborhoods_sf %>%
+  filter(!is.na(mean_duration),
+         n >= 10) %>%
+  tm_shape() +
+  tm_polygons(col = "med_duration",
+              style = "cont") +
+  tm_facets(by = "srtype",free.scales = T,
+            ncol = 3) +
+  tm_layout(frame = F,
+            panel.label.size = 2, 
+            panel.label.bg.color = 'white',
+            panel.label.height = 1.1,
+            panel.label.fontfamily = "oswald",
+            legend.text.size = 1.2,
+            legend.position = c("left", "bottom"),
+            between.margin = 0,
+            frame.lwd = 0,
+            legend.bg.alpha = 0.5,
+            legend.bg.color = "white")
+med_duration_by_hood
+
+save_tmap(med_duration_by_hood, 
+          "../output/plots/med_duration_by_neighborhood.png",
+          width = 8, height = 6)
+```
+```{r}
+service_requests@data %>% count(srtype)
+```
+
+```{r}
+sr_delivery_by_hood %>%
+  filter(n >= 10, srtype == "SW-HGW") %>%
+  arrange(desc(med_duration))
+```
+
+
+```{r leaflet}
+
+labels <- paste0(neighborhoods$label, "\n", neighborhoods$hcd_san_prop_per_capita)
+pal <- colorQuantile("Blues", domain = as.numeric(neighborhoods$hcd_san_prop_per_capita), n = 9)
+
+leaflet() %>%
+  setView(lng = -76.6, lat = 39.3, zoom = 12) %>%
+  addProviderTiles(providers$Stamen.TonerLite) %>% 
+  addPolygons(data = neighborhoods,
+              fillOpacity = .7,
+              fill = ~pal(neighborhoods$hcd_san_prop_per_capita),
+              color = ~pal(neighborhoods$hcd_san_prop_per_capita),
+              weight = 0,
+              label = ~lapply(labels,  toString))
+```
+
+
+```{r}
+#delivery_by_hood <- 
+  
+st_as_sf(neighborhoods) %>%
+  select(-acres, -Decennial2010.x, -ACS_2013_2017.x, -nbrdesc, -color_2, -shape_leng, -shape_area,
+         -Decennial2010.y, -ACS_2013_2017.y) %>%
+  gather(key = "type", value = "val", -label, -geometry)
+  
+  
+  
+
+neighborhoods_sf %>% 
+  select(-acres, -Decennial2010.x, -ACS_2013_2017.x, -nbrdesc, -color_2, -shape_leng, -shape_area,
+         -Decennial2010.y, -ACS_2013_2017.y) %>%
+  gather(key = "type", value = "val", -label, -geometry) %>% 
+  tm_shape() +
+  tm_polygons(col = "val",
+              style = "quantile") +
+  tm_facets(by = "type",free.scales = T)
+```
+
+# DOT
+
+```{r}
+dot_service_requests %>%
+  filter(grepl("TRM", srtype)) %>%
+  count(srtype) %>%
+  arrange(desc(n))
+```
+```{r}
+trm_we_care_about <- c("TRM-Grass Mowing",
+                       "TRM-StLight Damaged/Knocked Down/Rusted",
+                       "TRM-Debris In Roadway",
+                       "TRM-StLighting Inadequate/Too Bright",
+                       "TRM-Debris Hanging From Wires or Poles",
+                       "TRM-Graffiti Referral")
+
+dot_service_requests %>%
+  filter(srtype %in% trm_we_care_about,
+         srstatus == "Closed",
+         year(createddate) == 2019) %>%
+  mutate(duedate_fix = if_else(srtype == "TRM-Debris In Roadway", duedate + 24*60*60, duedate)) %>%
+  count(srtype, closedate <= duedate_fix) %>%
+  group_by(srtype) %>%
+  mutate(pct = n / sum(n),
+         records = sum(n)) 
+  #filter(`closedate <= duedate` == T) 
+  
+```
+```{r}
+dot_service_requests %>%
+  filter(srtype %in% trm_we_care_about,
+         srstatus %in% c("Open", "New", "Pending")) %>%
+  count(srtype, srstatus, today() > duedate)
+```
+
+```{r fig.width = 10}
+aaa <- neighborhoods_sf %>%
+  filter(!is.na(med_duration), 
+         n >= 10) %>%
+  tm_shape() +
+  tm_polygons(col = "med_duration",
+              style = "cont") +
+  tm_facets(by = "srtype",free.scales = T,
+            ncol = 3) +
+  tm_text("label") +
+  tm_layout(frame = F,
+            panel.label.size = 2, 
+            panel.label.bg.color = 'white',
+            panel.label.height = 1.1,
+            panel.label.fontfamily = "oswald",
+            legend.text.size = 1.2,
+            legend.position = c("left", "bottom"),
+            between.margin = 0,
+            frame.lwd = 0,
+            legend.bg.alpha = 0.5,
+            legend.bg.color = "white") 
+
+tmap_leaflet(aaa) 
+```
+

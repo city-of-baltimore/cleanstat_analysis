@@ -1,0 +1,510 @@
+---
+title: "Crime + Grime Index Development"
+author: "Justin Elszasz"
+email: "justin.elszasz@baltimorecity.gov"
+date: "Tuesday, January 20, 2020"
+output:
+  html_notebook:
+    code_folding: hide
+    fig_height: 5
+    fig_width: 10
+    toc: yes
+    toc_depth: 1
+editor_options: 
+  chunk_output_type: inline
+---
+
+The purpose of this notebook is to create a neighborhood index that combines crime and cleanliness data. The index relies on [311 service request data](https://data.baltimorecity.gov/City-Services/311-Customer-Service-Requests/9agw-sxsr) and [Part 1 violent crime data](https://data.baltimorecity.gov/Public-Safety/BPD-Part-1-Victim-Based-Crime-Data/wsfq-mvij), both availble on Open Baltimore.
+
+# Brief Description of The Index
+
+The index primarily relies on counts of violent crime and service requests *per 1,000 residents*. This is done to remove the influence of population on the counts of these events. The per-capita metrics are then scaled to between 0 and 1 to build up the overall index.
+
+All Part 1 crime types are used.
+
+The SR types used are:
+
+Illegal Dumping:
+
+- HCD-Illegal Dumping
+- SW-SIU Clean Up
+
+Property Maintenance:
+
+- HCD-Sanitation Property
+- SW-Boarding
+- SW-HGW
+- SW-Cleaning
+
+Right-of-Way Cleaning
+
+- SW-Dirty Street
+- SW-Dirty Alley
+
+
+```{r setup, include = T, echo = T, message = FALSE, cache = TRUE}
+knitr::opts_chunk$set(echo = T, 
+                      warning = F, 
+                      message = F,
+                      include = T,
+                      fig.width = 4,
+                      fig.height = 3)
+```
+
+```{r libraries}
+library(tidyverse)
+library(ggiteam)
+library(lubridate)
+library(readxl)
+library(spdplyr)
+library(leaflet)
+library(RSocrata)
+library(geojsonsf)
+library(ggmap)
+library(rgdal)
+library(scales)
+library(sf)
+library(htmltools)
+
+
+register_google("AIzaSyByyKUj4QaAlzNtPJPw-HkEEr7d4hTawO0")
+```
+ 
+```{r load_sr, cache = T}
+sr_query <- paste0("https://data.baltimorecity.gov/resource/9agw-sxsr.json",
+                "?$where=",
+                "((srtype like 'SW-Boarding' OR ",
+                "srtype like 'SW-Cleaning' OR ",
+                "srtype like 'SW-HGW' OR ",
+                "srtype like 'SW-Dirty Alley' OR ",
+                "srtype like 'SW-Dirty Street' OR ",
+                "srtype like 'HCD-Illegal Dumping' OR ",
+                "srtype like 'HCD-SIU' OR ",
+                "srtype like 'SW-SIU Clean Up' OR ",
+                "srtype like 'HCD-Sanitation Property') AND ",
+                "date_extract_y(createddate)==2019)")
+
+sr <- read.socrata(url = sr_query)
+
+sr <- sr %>% 
+  mutate(
+    latitude = as.numeric(latitude), 
+    longitude = as.numeric(longitude),
+    neighborhood = toupper(neighborhood))
+```
+
+```{r load_crime, cache = T}
+crime_query <- paste0("https://data.baltimorecity.gov/resource/wsfq-mvij.json?$where=",
+                "(Description like 'HOMICIDE' OR ",
+                "Description like 'SHOOTING' OR ", 
+                "Description like 'AGG. ASSAULT' OR ",
+                "Description like 'RAPE' OR ",
+                "contains(Description, 'ROBBERY')) AND ",
+                "date_extract_y(crimedate)==2019")
+
+crime <- read.socrata(crime_query)
+```
+
+```{r load_neighborhoods}
+hoods.url <- "https://data.baltimorecity.gov/resource/h3fx-54q3.geojson"
+
+# surely there is a better way, and i tried, but couldn't get anything else to work.
+# from geojson to sf to spatial df. geojson_sp didn't work for me.
+hoods <- geojson_sf(hoods.url)
+hoods <- as_Spatial(hoods)
+hoods <- spTransform(hoods, CRS("+init=epsg:4326"))
+```
+
+```{r}
+# join acs data to hoods
+hoods_pop <- read_excel("../data/raw/Neighborhood Pop.xlsx")
+hoods@data <- left_join(hoods@data, hoods_pop, by = c("label" = "Name"))
+```
+
+
+```{r}
+# bpd facilities to remove
+facilities <- c(
+  "300 E MADISON ST", # central booking
+  "1400 E NORTH AVE", # district court
+  "1900 ARGONNE DR", # northeastern
+  "2200 W Cold Spring Ln", # northern
+  "1000 N MOUNT ST", # western
+  "5200 REISTERSTOWN RD	", # northwest
+  "1600 EDISON HWY", # eastern
+  "400 FONTHILL AVE", # southwest
+  "0 CHERRY HILL RD", # southern
+  "600 E FAYETTE ST", # central/hq
+  "5700 EASTERN AVE", # southeast
+  "2000 W BALTIMORE ST",  # bon secours
+  "4000 DEEPWOOD RD", # loch raven va
+  "300 N GAY ST", # juv booking
+  "4900 EASTERN AV", # bayview
+  "1800 ORLEANS ST", # jhh downtown
+  "600 N WOLFE ST", # jhh downtown
+  "0 S GREENE ST", # umd medical center
+  "3400 N CALVERT ST" # union memorial
+)
+
+```
+
+Population distribution of Baltimore neighborhoods.
+
+```{r fig.height = 1, fig.width = 2}
+hoods@data %>%
+  ggplot(aes(ACS_2013_2017)) +
+  geom_histogram() +
+  theme_iteam_google_docs()
+```
+
+Tenth percentile for population:
+
+```{r}
+quantile(hoods$ACS_2013_2017, 0.1, na.rm = T)
+```
+
+# Analysis
+
+```{r}
+crime_labeled <- crime %>%
+  filter(
+    !is.na(latitude),
+    !(location %in% facilities)
+    ) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_join(st_as_sf(hoods), join = st_within, left = F)
+
+crime_hood_counts <- crime_labeled %>%
+  data.frame() %>%
+  count(description, label) %>%
+  spread(key = description, value = n) %>%
+  replace(is.na(.), 0) %>%
+  transmute(
+    label = label,
+    agg_assault = `AGG. ASSAULT`,
+    rape = RAPE,
+    homicide_shootings = HOMICIDE + SHOOTING,
+    robbery = `ROBBERY - COMMERCIAL` +
+      `ROBBERY - CARJACKING` +
+      `ROBBERY - RESIDENCE` +
+      `ROBBERY - STREET`) 
+```
+
+```{r}
+sr_labeled <- sr %>%
+  filter(
+    !is.na(latitude)
+    ) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_join(st_as_sf(hoods), join = st_within, left = F)
+
+sr_hood_counts <- sr_labeled %>%
+  data.frame() %>%
+  count(srtype, label) %>%
+  spread(key = srtype, value = n) %>%
+  replace(is.na(.), 0) %>%
+  transmute(
+    label = label,
+    illegal_dumping = `HCD-Illegal Dumping` + `SW-SIU Clean Up`,
+    property_maintenance = `HCD-Sanitation Property` +
+      `SW-Boarding` +
+      `SW-Cleaning` +
+      `SW-HGW`,
+    right_of_way = `SW-Dirty Street` + `SW-Dirty Alley`
+  )
+
+```
+
+```{r}
+# to per 1,000 residents
+to_per_capita <- function(x){1000 * x / hoods$ACS_2013_2017}
+
+hood_metrics <- hoods
+
+hood_metrics@data <- hood_metrics@data %>%
+  select(-acres,
+         -nbrdesc,
+         -shape_leng,
+         -shape_area,
+         -color_2,
+         -Decennial2010)
+
+hood_metrics@data <- hood_metrics@data %>%
+  left_join(
+    crime_hood_counts,
+    by = "label") %>%
+  left_join(
+    sr_hood_counts,
+    by = "label"
+  ) %>%
+  mutate_at(
+    vars(
+      illegal_dumping,
+      property_maintenance,
+      right_of_way,
+      homicide_shootings,
+      robbery,
+      agg_assault,
+      rape),
+    list(per_1000_res = to_per_capita))
+```
+
+Distribution of per capita rates of crime and service requests:
+
+```{r}
+hood_metrics@data %>%
+  select(
+    label,
+    illegal_dumping_per_1000_res,
+    property_maintenance_per_1000_res,
+    right_of_way_per_1000_res,
+    homicide_shootings_per_1000_res,
+    robbery_per_1000_res,
+    agg_assault_per_1000_res,
+    rape_per_1000_res
+  ) %>%
+  pivot_longer(-label) %>%
+  ggplot(aes(value)) +
+  facet_wrap(~name, scales = "free") +
+  geom_histogram(bins = 50) +
+  theme_iteam_google_docs() +
+  labs(title = "2019 Events per 1,000 Residents")
+```
+
+In all cases, outlier neighborhoods with very small populations skew data. 
+
+Try removing neighborhoods with less than 150 residents (10% of neighborhoods). These are typically parks, industrial areas, etc.
+
+```{r}
+hood_metrics@data %>%
+  filter(ACS_2013_2017 >= 150) %>%
+  select(
+    label,
+    illegal_dumping_per_1000_res,
+    property_maintenance_per_1000_res,
+    right_of_way_per_1000_res,
+    homicide_shootings_per_1000_res,
+    robbery_per_1000_res,
+    agg_assault_per_1000_res,
+    rape_per_1000_res
+  ) %>%
+  pivot_longer(-label) %>%
+  ggplot(aes(value)) +
+  facet_wrap(~name, scales = "free") +
+  geom_histogram(bins = 50) +
+    theme_iteam_google_docs() +
+  labs(title = "2019 Events per 1,000 Residents\nNeighborhoods with >= 150 Residents")
+```
+
+Going forward, removing neighborhoods with less than 150 residents.
+
+```{r}
+hood_metrics_over150 <- subset(hood_metrics, hood_metrics$ACS_2013_2017 > 150)
+```
+
+Number of neighborhoods with at least one homicide or shooting:
+
+```{r}
+hood_metrics_over150@data %>%
+  count(homicide_shootings >= 1)
+```
+
+Will likely assign 1 to neighborhoods with at least 1 homicide or shooting, 0 to all others. This will ensure neighborhoods with gun violence are given precedence.
+
+# Building The Index
+
+All parameters will be scaled to between 0 and 1 because variables are on different scales.
+
+```{r}
+# scale per capita
+scale_index <- function(x){rescale(x, to = c(0,1))}
+
+hood_metrics_over150@data <- hood_metrics_over150@data %>%
+  mutate(
+    homicide_shootings_index = ifelse(homicide_shootings > 0, 1, 0),
+    rape_index = ifelse(rape > 0, 1, 0)) %>%
+  mutate_at(
+    vars(
+      illegal_dumping_per_1000_res,
+      property_maintenance_per_1000_res,
+      right_of_way_per_1000_res,
+      homicide_shootings_per_1000_res,
+      robbery_per_1000_res,
+      agg_assault_per_1000_res,
+      rape_per_1000_res),
+    list(index = scale_index)
+    ) 
+```
+
+```{r}
+# plot rescaled data
+hood_metrics_over150@data %>%
+  select(
+    label,
+    illegal_dumping_per_1000_res_index,
+    property_maintenance_per_1000_res_index,
+    right_of_way_per_1000_res_index,
+    homicide_shootings_per_1000_res_index,
+    robbery_per_1000_res_index,
+    agg_assault_per_1000_res_index,
+    rape_per_1000_res_index
+  ) %>%
+  pivot_longer(-label) %>%
+  ggplot(aes(value)) +
+  facet_wrap(~name, scales = "free") +
+  geom_histogram(bins = 50) +
+    theme_iteam_google_docs() +
+  labs(title = "Standardized (between 0 and 1) 2019 Events per 1,000 Residents\nNeighborhoods with >= 150 Residents")
+```
+
+**Again, all metrics have been scaled to between 0 and 1.** Combine crime metrics into a homicide and shooting parameter (0 if none in neighborhood, 1 if at least 1) and an "other violent crime" parameter where:
+
+$$ HomicideShootingsIndex = \begin{cases}
+1 & \text{if $N_{homicides}+N_{shootings} > 0$ } \\ 
+0 & \text{otherwise} \end{cases}$$
+
+$$ OtherViolentCrimeIndex = \frac{1}{3}(RapeIndex+ AggAssaultIndex + RobberyIndex) $$
+
+Combining the two crime indices:
+
+$$ CrimeIndex = \frac{1}{2} (HomicideShootingsIndex + OtherViolentCrimeIndex) $$
+```{r}
+# create combined index
+hood_metrics_over150@data <- hood_metrics_over150@data %>%
+  rowwise() %>%
+  mutate(
+    other_violent_crime_index = 
+      mean(
+        c(rape_per_1000_res_index,
+          agg_assault_per_1000_res_index, 
+          robbery_per_1000_res_index), 
+        na.rm = T),
+    grime_index = mean(
+      c(illegal_dumping_per_1000_res_index,
+        property_maintenance_per_1000_res_index,
+        right_of_way_per_1000_res_index),
+      na.rm = T)
+  ) %>%
+  ungroup() %>%
+  mutate(crime_index = 0.5 * homicide_shootings_index + 
+           0.5 * other_violent_crime_index,
+         crime_grime_index = 0.5 * crime_index + 0.5 * grime_index)
+  
+hood_metrics_over150@data <- hood_metrics_over150@data %>%
+  mutate(crime_grime_index_quadrature = sqrt(crime_index^2 + grime_index^2))
+```
+
+Now creating the "grime" index:
+
+$$ GrimeIndex = \frac{1}{3}(IllegalDumpingIndex + PropMaintenanceIndex + RightOfWayIndex) $$
+Combine into a single index:
+
+$$ CrimeGrimeIndex = \frac{1}{2}(CrimeIndex +GrimeIndex) $$
+
+# Just Show Me The Results
+
+```{r fig.height = 8, fig.width = 8}
+# base_map <- get_map(
+#   location=c(lon = -76.61, lat = 39.3), 
+#   zoom=12, 
+#   maptype = 'toner-lite', 
+#   source = 'stamen'
+#   )
+# 
+# ggmap(base_map) +
+#   # geom_point(
+#   #   data = repeat_offender_locations %>%
+#   #     filter(!is.na(lon),
+#   #            n >= 3),
+#   #   aes(x = lon, y = lat),
+#   #   color = "blue",
+#   #   size = 2
+#   # )  
+#   geom_polygon(
+#     data = fortify(hood_metrics_over150) %>%
+#       filter(!is.na(crime_grime_index)),
+#     aes(x = long, y = lat, group = group, fill = crime_grime_index), 
+#     alpha = 0.9,color = "black"
+#   )# +
+#   # scale_fill_viridis_c(na.value = NA, 
+#   #                      #values = rescale(c(0, 20, 70), c(0,1)),
+#   #                      option = "plasma",
+#   #                      guide_colorbar(title = "Annual DV Incidents\nper 1,000 Residents"))
+#   # 
+```
+
+```{r}
+hoods@data <- hoods@data %>%
+  left_join(
+    hood_metrics_over150@data %>% select(-ACS_2013_2017),
+    by = "label"
+  )
+```
+
+
+```{r}
+# color palette for map
+pal <-  colorNumeric("viridis", domain = hoods$crime_grime_index)
+
+# labels
+map_labels <- paste0(
+  "<b>",hoods$label, "</b><br>",
+  "Population: ", round(hoods$ACS_2013_2017, 0), "<br>",
+  "Crime & Grime Index: ", round(hoods$crime_grime_index, 2), "<br>",
+  "Crime Index: ", round(hoods$crime_index, 2), "<br>",
+  "Grime Index: ", round(hoods$grime_index, 2), "<br>",
+  "<br><b>2019 Crime</b><br>",
+  "Homicides + Shootings: ", hoods$homicide_shootings, "<br>",
+  "Rape: ", hoods$rape, "<br>",
+  "Aggravated Assault: ", hoods$agg_assault, "<br>",
+  "Robbery: ", hoods$robbery, "<br>",
+  "<br><b>2019 Service Requests</b><br>",
+  "Illegal Dumping SRs: ", hoods$illegal_dumping, "<br>",
+  "Property Maintenance SRs: ", hoods$property_maintenance, "<br>",
+  "Right-of-Way SRs: ", hoods$right_of_way, "<br>"
+)
+```
+
+```{r fig.width = 8, fig.height = 6}
+leaflet() %>%
+  setView(lng = -76.6, lat = 39.3, zoom = 11) %>%
+  addProviderTiles(providers$Stamen.TonerLite) %>% 
+  addPolygons(data = hoods,
+              weight = 2,
+              fillColor  = ~pal(hoods$crime_grime_index),
+              color = "black",
+              opacity = 0.9,
+              fillOpacity = 0.75,
+              label = ~lapply(map_labels, HTML))
+```
+
+## Distribution of Indexes
+
+Because of the homicide and shooting index being 1 for neighborhoods with at least one homicide or shooting and 0 for all others, the distribution is bifurcated into neighborhoods with and without shootings.
+
+```{r, fig.height = 1, fig.width = 2}
+hoods@data %>%
+  ggplot(aes(crime_grime_index)) +
+  geom_histogram() +
+  theme_iteam_google_docs() +
+  geom_text(aes(0.3, 25, 
+                label="At Least 1 Homicide or Shooting\nin 2019"), size = 2, hjust = 0) +
+  geom_text(aes(0.04, 25, 
+                label="No Homicides or Shootings\nin 2019"), size = 2, hjust = 0)
+```
+
+## The List, In Order of Descending Crime-Grime Index
+
+Some neighborhoods with very small populations still sneak onto the list because we only used 150 as the cut-off, but those can be manually dropped if not interested.
+
+```{r}
+the_list <- hoods@data %>%
+  arrange(desc(crime_grime_index)) %>%
+  select(-acres, -nbrdesc, -shape_leng, -shape_area, -color_2, -Decennial2010) %>%
+  rename(neighborhood = label,
+         population_acs_2013_2017 = ACS_2013_2017)
+
+#write_csv(the_list, "../data/processed/crime_grime_index_v1.csv")
+
+the_list
+```
