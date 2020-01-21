@@ -2,7 +2,7 @@
 title: "Crime + Grime Index Development"
 author: "Justin Elszasz"
 email: "justin.elszasz@baltimorecity.gov"
-date: "Tuesday, January 20, 2020"
+date: "Tuesday, January 21, 2020"
 output:
   html_notebook:
     code_folding: hide
