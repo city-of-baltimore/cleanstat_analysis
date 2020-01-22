@@ -507,11 +507,7 @@ Because of the homicide and shooting index being 1 for neighborhoods with at lea
 hoods@data %>%
   ggplot(aes(crime_grime_index)) +
   geom_histogram() +
-  theme_iteam_google_docs() +
-  geom_text(aes(0.3, 25, 
-                label="At Least 1 Homicide or Shooting\nin 2019"), size = 2, hjust = 0) +
-  geom_text(aes(0.04, 25, 
-                label="No Homicides or Shootings\nin 2019"), size = 2, hjust = 0)
+  theme_iteam_google_docs() 
 ```
 
 ## The List, In Order of Descending Crime-Grime Index
