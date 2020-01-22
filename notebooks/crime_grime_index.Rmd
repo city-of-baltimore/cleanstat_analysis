@@ -105,6 +105,18 @@ crime_query <- paste0("https://data.baltimorecity.gov/resource/wsfq-mvij.json?$w
 crime <- read.socrata(crime_query)
 ```
 
+```{r cityline}
+cityline_url <- "https://data.baltimorecity.gov/resource/nfyc-pejx.geojson"
+
+# surely there is a better way, and i tried, but couldn't get anything else to work.
+# from geojson to sf to spatial df. geojson_sp didn't work for me.
+cityline <- geojson_sf(cityline_url)
+cityline <- as_Spatial(cityline)
+cityline <- spTransform(cityline, CRS("+init=epsg:4326"))
+
+```
+
+
 ```{r load_neighborhoods}
 hoods.url <- "https://data.baltimorecity.gov/resource/h3fx-54q3.geojson"
 
@@ -300,6 +312,7 @@ Going forward, removing neighborhoods with less than 150 residents.
 
 ```{r}
 hood_metrics_over150 <- subset(hood_metrics, hood_metrics$ACS_2013_2017 > 150)
+hood_metrics_over150 <- subset(hood_metrics_over150, !grepl("INDUSTRIAL", label, ignore.case = T))
 ```
 
 Number of neighborhoods with at least one homicide or shooting:
@@ -386,20 +399,18 @@ hood_metrics_over150@data <- hood_metrics_over150@data %>%
       na.rm = T)
   ) %>%
   ungroup() %>%
-  mutate(crime_index = 0.5 * homicide_shootings_index + 
+  mutate(crime_index = 0.5 * homicide_shootings_per_1000_res_index + 
            0.5 * other_violent_crime_index,
-         crime_grime_index = 0.5 * crime_index + 0.5 * grime_index)
-  
-hood_metrics_over150@data <- hood_metrics_over150@data %>%
-  mutate(crime_grime_index_quadrature = sqrt(crime_index^2 + grime_index^2))
+         crime_grime_index = (2/3) * crime_index + (1/3) * grime_index,
+         crime_grime_index_quadrature = sqrt(crime_index^2 + grime_index^2))
 ```
 
 Now creating the "grime" index:
 
 $$ GrimeIndex = \frac{1}{3}(IllegalDumpingIndex + PropMaintenanceIndex + RightOfWayIndex) $$
-Combine into a single index:
+Combine into a single index. Crime weighted more heavily.
 
-$$ CrimeGrimeIndex = \frac{1}{2}(CrimeIndex +GrimeIndex) $$
+$$ CrimeGrimeIndex = \frac{2}{3}CrimeIndex + \frac{1}{3}GrimeIndex $$
 
 # Just Show Me The Results
 
@@ -444,25 +455,28 @@ hoods@data <- hoods@data %>%
 
 ```{r}
 # color palette for map
-pal <-  colorNumeric("viridis", domain = hoods$crime_grime_index)
+pal <-  colorNumeric("viridis", 
+                     domain = hoods$crime_grime_index,
+                     na.color = NA)
 
 # labels
-map_labels <- paste0(
-  "<b>",hoods$label, "</b><br>",
-  "Population: ", round(hoods$ACS_2013_2017, 0), "<br>",
-  "Crime & Grime Index: ", round(hoods$crime_grime_index, 2), "<br>",
-  "Crime Index: ", round(hoods$crime_index, 2), "<br>",
-  "Grime Index: ", round(hoods$grime_index, 2), "<br>",
-  "<br><b>2019 Crime</b><br>",
-  "Homicides + Shootings: ", hoods$homicide_shootings, "<br>",
-  "Rape: ", hoods$rape, "<br>",
-  "Aggravated Assault: ", hoods$agg_assault, "<br>",
-  "Robbery: ", hoods$robbery, "<br>",
-  "<br><b>2019 Service Requests</b><br>",
-  "Illegal Dumping SRs: ", hoods$illegal_dumping, "<br>",
-  "Property Maintenance SRs: ", hoods$property_maintenance, "<br>",
-  "Right-of-Way SRs: ", hoods$right_of_way, "<br>"
-)
+hoods@data <- hoods@data %>%
+  mutate(map_label = paste0(
+    "<b>",hoods$label, "</b><br>",
+    "Population: ", round(hoods$ACS_2013_2017, 0), "<br>",
+    "Crime & Grime Index: ", round(hoods$crime_grime_index, 2), "<br>",
+    "Crime Index: ", round(hoods$crime_index, 2), "<br>",
+    "Grime Index: ", round(hoods$grime_index, 2), "<br>",
+    "<br><b>2019 Crime</b><br>",
+    "Homicides + Shootings: ", hoods$homicide_shootings, "<br>",
+    "Rape: ", hoods$rape, "<br>",
+    "Aggravated Assault: ", hoods$agg_assault, "<br>",
+    "Robbery: ", hoods$robbery, "<br>",
+    "<br><b>2019 Service Requests</b><br>",
+    "Illegal Dumping SRs: ", hoods$illegal_dumping, "<br>",
+    "Property Maintenance SRs: ", hoods$property_maintenance, "<br>",
+    "Right-of-Way SRs: ", hoods$right_of_way, "<br>"
+))
 ```
 
 ```{r fig.width = 8, fig.height = 6}
@@ -475,7 +489,8 @@ leaflet() %>%
               color = "black",
               opacity = 0.9,
               fillOpacity = 0.75,
-              label = ~lapply(map_labels, HTML))
+              label = ~lapply(hoods$map_label, HTML)) %>%
+  addControl("Baltimore<br>Crime & Grime Index", position = "topleft")
 ```
 
 ## Distribution of Indexes
@@ -504,7 +519,42 @@ the_list <- hoods@data %>%
   rename(neighborhood = label,
          population_acs_2013_2017 = ACS_2013_2017)
 
-#write_csv(the_list, "../data/processed/crime_grime_index_v1.csv")
+write_csv(the_list, "../data/processed/crime_grime_index_v3.csv")
 
 the_list
 ```
+
+```{r}
+top_20 <- hoods %>%
+  arrange(desc(crime_grime_index)) %>%
+  top_n(n = 20, wt = crime_grime_index)
+```
+
+```{r fig.width = 8, fig.height = 6}
+leaflet() %>%
+  setView(lng = -76.6, lat = 39.3, zoom = 11) %>%
+  addProviderTiles(providers$Stamen.TonerLite) %>%
+  addPolygons(data = cityline,
+              weight = 2,
+              #fillColor  = iteam.colors[1],
+              color = iteam.colors[2],
+              opacity = 0.9,
+              fillOpacity = 0.0) %>%
+  addPolygons(data = top_20,
+              weight = 2,
+              fillColor  = iteam.colors[1],
+              color = iteam.colors[2],
+              opacity = 0.9,
+              fillOpacity = 0.75,
+              popup = ~lapply(top_20$map_label, HTML),
+              label = top_20$label,
+              labelOptions = labelOptions(noHide = T, 
+                                          textOnly = T,
+                                          direction = 'center',
+                                          textsize = 2)) %>%
+
+  addControl("Baltimore<br>Crime & Grime Index<br>Top 20 Neighborhoods<br><br>Click Neighborhood<br>For More Info", 
+             position = "topleft")
+```
+
+
