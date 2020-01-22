@@ -496,7 +496,10 @@ leaflet() %>%
                                           direction = 'right',
                                           textsize = 2,
                                           opacity = 1)) %>%
-  addControl("Baltimore<br>Crime & Grime Index", position = "topleft")
+  addControl("Baltimore<br>Crime & Grime Index<br><br>Click Neighborhood<br>For More Info",
+             position = "topleft") %>%
+  addLegend(pal = pal, values = hoods$crime_grime_index, position = "bottomright",
+            title = "Crime Grime Index")
 ```
 
 ## Distribution of Indexes
