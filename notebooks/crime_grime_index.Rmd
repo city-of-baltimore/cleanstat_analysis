@@ -457,7 +457,7 @@ hoods@data <- hoods@data %>%
 # color palette for map
 pal <-  colorNumeric("viridis", 
                      domain = hoods$crime_grime_index,
-                     na.color = NA)
+                     na.color = "transparent")
 
 # labels
 hoods@data <- hoods@data %>%
@@ -489,7 +489,13 @@ leaflet() %>%
               color = "black",
               opacity = 0.9,
               fillOpacity = 0.75,
-              label = ~lapply(hoods$map_label, HTML)) %>%
+              label = hoods$label,
+              popup = ~lapply(hoods$map_label, HTML),
+              labelOptions = labelOptions(noHide = F, 
+                                          #textOnly = T,
+                                          direction = 'right',
+                                          textsize = 2,
+                                          opacity = 1)) %>%
   addControl("Baltimore<br>Crime & Grime Index", position = "topleft")
 ```
 
@@ -530,31 +536,71 @@ top_20 <- hoods %>%
   top_n(n = 20, wt = crime_grime_index)
 ```
 
+```{r}
+color_list <- hoods@data %>%
+  arrange(desc(crime_grime_index)) %>%
+  mutate(top20_color = ifelse(row_number() <= 20, iteam.colors[1], NA)) %>%
+  select(label, top20_color)
+
+hoods@data <- hoods@data %>%
+  left_join(color_list, by = "label")
+```
+
+# Top 20 Neighborhoods
+
 ```{r fig.width = 8, fig.height = 6}
+fill_pal <- colorFactor(hoods$top20_color, hoods$top20_color, na.color = "transparent")
+
 leaflet() %>%
   setView(lng = -76.6, lat = 39.3, zoom = 11) %>%
-  addProviderTiles(providers$Stamen.TonerLite) %>%
-  addPolygons(data = cityline,
+  addProviderTiles(providers$Stamen.TonerLite) %>% 
+  addPolygons(data = hoods,
               weight = 2,
-              #fillColor  = iteam.colors[1],
-              color = iteam.colors[2],
-              opacity = 0.9,
-              fillOpacity = 0.0) %>%
-  addPolygons(data = top_20,
-              weight = 2,
-              fillColor  = iteam.colors[1],
-              color = iteam.colors[2],
+              fillColor  = ~fill_pal(hoods$top20_color),
+              color = "black",
               opacity = 0.9,
               fillOpacity = 0.75,
-              popup = ~lapply(top_20$map_label, HTML),
-              label = top_20$label,
-              labelOptions = labelOptions(noHide = T, 
-                                          textOnly = T,
-                                          direction = 'center',
-                                          textsize = 2)) %>%
-
+              label = hoods$label,
+              popup = ~lapply(hoods$map_label, HTML),
+              labelOptions = labelOptions(noHide = F, 
+                                          #textOnly = T,
+                                          direction = 'right',
+                                          textsize = 2,
+                                          opacity = 1)) %>%
   addControl("Baltimore<br>Crime & Grime Index<br>Top 20 Neighborhoods<br><br>Click Neighborhood<br>For More Info", 
              position = "topleft")
 ```
 
+# Crime v. Grime
+Red means the crime index was higher, blue means the grime index was higher.
 
+```{r}
+hoods@data <- hoods@data %>% mutate(crime_grime_index_diff = crime_index - grime_index)
+```
+
+
+```{r fig.width = 8, fig.height = 6}
+diff_pal <-  colorNumeric("RdBu", 
+                     domain = hoods$crime_grime_index_diff,
+                     na.color = "transparent", reverse = T)
+
+leaflet() %>%
+  setView(lng = -76.6, lat = 39.3, zoom = 11) %>%
+  addProviderTiles(providers$Stamen.TonerLite) %>% 
+  addPolygons(data = hoods,
+              weight = 2,
+              fillColor  = ~diff_pal(hoods$crime_grime_index_diff),
+              color = "black",
+              opacity = 0.9,
+              fillOpacity = 0.75,
+              label = hoods$label,
+              popup = ~lapply(hoods$map_label, HTML),
+              labelOptions = labelOptions(noHide = F, 
+                                          #textOnly = T,
+                                          direction = 'right',
+                                          textsize = 2,
+                                          opacity = 1)) %>%
+  addControl("Baltimore<br>Crime & Grime Index<br>Crime-Grime Difference<br><br>Click Neighborhood<br>For More Info", 
+             position = "topleft") %>%
+  addLegend(pal = diff_pal, values = hoods$crime_grime_index_diff, position = "bottomright", title = "Red: More Crime<br>Blue: More Grime")
+```
