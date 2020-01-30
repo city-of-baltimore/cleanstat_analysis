@@ -518,15 +518,15 @@ hoods@data %>%
 Some neighborhoods with very small populations still sneak onto the list because we only used 150 as the cut-off, but those can be manually dropped if not interested.
 
 ```{r}
-the_list <- hoods@data %>%
-  arrange(desc(crime_grime_index)) %>%
+hoods@data %>%
+  arrange(desc(robbery_per_1000_res)) %>%
   select(-acres, -nbrdesc, -shape_leng, -shape_area, -color_2, -Decennial2010) %>%
   rename(neighborhood = label,
          population_acs_2013_2017 = ACS_2013_2017)
 
-write_csv(the_list, "../data/processed/crime_grime_index_v3.csv")
+#write_csv(the_list, "../data/processed/crime_grime_index_v3.csv")
 
-the_list
+
 ```
 
 ```{r}
@@ -602,4 +602,94 @@ leaflet() %>%
   addControl("Baltimore<br>Crime & Grime Index<br>Crime-Grime Difference<br><br>Click Neighborhood<br>For More Info", 
              position = "topleft") %>%
   addLegend(pal = diff_pal, values = hoods$crime_grime_index_diff, position = "bottomright", title = "Red: More Crime<br>Blue: More Grime")
+```
+
+
+
+```{r}
+hoods@data %>%
+  filter(label %in% c("Milton-Montford",
+                      "Carrollton Ridge",
+                      "Penn North",
+                      "Broadway East",
+                      "Downtown")) %>%
+  arrange(desc(robbery_per_1000_res)) %>%
+  select(-acres, -nbrdesc, -shape_leng, -shape_area, -color_2, -Decennial2010) %>%
+  rename(neighborhood = label,
+         population_acs_2013_2017 = ACS_2013_2017) 
+```
+
+```{r fig.width = 12, fig.height = 6}
+hoods@data %>%
+  filter(label %in% c("Milton-Montford",
+                      "Carrollton Ridge",
+                      "Penn North",
+                      "Broadway East",
+                      "Downtown")) %>%
+  select(
+    label,
+    illegal_dumping_per_1000_res,
+    property_maintenance_per_1000_res,
+    right_of_way_per_1000_res,
+    homicide_shootings_per_1000_res,
+    robbery_per_1000_res,
+    agg_assault_per_1000_res,
+    rape_per_1000_res) %>%
+  pivot_longer(-label) %>%
+  ggplot(aes(label, value)) +
+  facet_wrap(~name, scales = "free") + 
+  geom_col() +
+  coord_flip() +
+  theme_iteam_google_docs() 
+```
+
+```{r fig.width = 7, fig.height = 7}
+hoods@data %>%
+  filter(label %in% c("Milton-Montford",
+                      "Carrollton Ridge",
+                      "Penn North",
+                      "Broadway East")) %>%
+  transmute(
+    Neighborhood = label,
+    `Illegal Dumping SRs per 1,000 Residents` = illegal_dumping_per_1000_res,
+    `Prop.  Maintenance SRs per 1,000 Residents` = property_maintenance_per_1000_res,
+    `Right of Way SRs per 1,000 Residents` = right_of_way_per_1000_res,
+    `Homicides per 1,000 Residents` = homicide_shootings_per_1000_res,
+    `Robbery per 1,000 Residents` = robbery_per_1000_res,
+    `Agg. Assault per 1,000 Residents` = agg_assault_per_1000_res,
+    `Rape per 1,000 Residents` = rape_per_1000_res) %>%
+  pivot_longer(-Neighborhood) %>%
+  ggplot(aes(Neighborhood, value)) +
+  facet_wrap(facets = ~name, ncol = 2, scales = "free") + 
+  geom_col() +
+  coord_flip() +
+  theme_iteam_google_docs()  +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+```
+
+
+```{r fig.width = 7, fig.height = 7}
+hoods@data %>%
+  filter(label %in% c("Milton-Montford",
+                      "Carrollton Ridge",
+                      "Penn North",
+                      "Broadway East")) %>%
+  transmute(
+    Neighborhood = label,
+    `Illegal Dumping SRs` = illegal_dumping,
+    `Prop.  Maintenance SRs` = property_maintenance,
+    `Right of Way SRs` = right_of_way,
+    `Homicides` = homicide_shootings,
+    `Robbery` = robbery,
+    `Agg. Assault ` = agg_assault,
+    `Rape` = rape) %>%
+  pivot_longer(-Neighborhood) %>%
+  ggplot(aes(Neighborhood, value)) +
+  facet_wrap(facets = ~name, ncol = 2, scales = "free") + 
+  geom_col() +
+  coord_flip() +
+  theme_iteam_google_docs()  +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank())
 ```
